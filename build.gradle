@@ -1,0 +1,98 @@
+buildscript {
+    repositories {
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.google.protobuf:protobuf-gradle-plugin:0.8.18'
+    }
+}
+
+plugins {
+    id "java"
+    id "org.jetbrains.kotlin.jvm" version "1.6.10"
+    id "com.google.protobuf" version "0.8.18"
+}
+
+protobuf {
+    protoc {
+        // The version of protoc must match protobuf-java. If you don't depend on
+        // protobuf-java directly, you will be transitively depending on the
+        // protobuf-java version that grpc depends on.
+        artifact = "com.google.protobuf:protoc:3.19.1"
+    }
+    plugins {
+        grpc {
+            artifact = "io.grpc:protoc-gen-grpc-java:1.43.1"
+        }
+
+        grpckt {
+            artifact = "io.grpc:protoc-gen-grpc-kotlin:1.2.0:jdk7@jar"
+        }
+    }
+    generateProtoTasks {
+        all()*.plugins {
+            grpc {}
+            grpckt {}
+        }
+    }
+    generatedFilesBaseDir = "$projectDir/src/main/generated"
+}
+
+compileJava {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+}
+
+compileKotlin {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+}
+
+tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).all {
+    kotlinOptions {
+        jvmTarget = JavaVersion.VERSION_11
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+tasks.test {
+    useJUnitPlatform()
+    testLogging {
+        events("passed", "skipped", "failed")
+    }
+}
+
+dependencies {
+    implementation "org.jetbrains.kotlin:kotlin-stdlib"
+    implementation "io.reactivex.rxjava3:rxkotlin:3.0.1"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.6.0"
+    implementation "io.grpc:grpc-all:1.43.1"
+    implementation "io.grpc:grpc-kotlin-stub:1.2.0"
+
+    testImplementation "org.junit.jupiter:junit-jupiter:5.8.2"
+    testImplementation "org.assertj:assertj-core:3.21.0"
+    testImplementation "org.mockito.kotlin:mockito-kotlin:4.0.0"
+}
+
+task runService(type: JavaExec) {
+    classpath = sourceSets.main.runtimeClasspath
+    main = 'com.github.lumber1000.simex.service.SimexServiceKt'
+}
+
+task runMonitor(type: JavaExec) {
+    classpath = sourceSets.main.runtimeClasspath
+    main = 'com.github.lumber1000.simex.clients.MarketDataMonitorKt'
+}
+
+task runTestClient(type: JavaExec) {
+    classpath = sourceSets.main.runtimeClasspath
+    main = 'com.github.lumber1000.simex.clients.TestClientKt'
+}
+
+task runRandomTrader(type: JavaExec) {
+    classpath = sourceSets.main.runtimeClasspath
+    main = 'com.github.lumber1000.simex.clients.RandomTraderKt'
+}
