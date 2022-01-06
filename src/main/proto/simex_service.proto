@@ -21,6 +21,10 @@ message SubmitOrderResponse {
   sint64 orderId = 1;
 }
 
+message CancelOrderRequest {
+  sint64 orderId = 1;
+}
+
 message CancelOrderResponse {
   bool succeed = 1;
   string errorMessage = 2;
@@ -33,14 +37,14 @@ message MarketEvent {
   sint64 timestamp = 3;
 
   oneof event {
-    Trade trade = 11;
-    OrderAdded order_added_event = 12;
-    OrderSizeChanged order_size_changed = 13;
+    Trade trade = 4;
+    OrderAdded order_added_event = 5;
+    OrderSizeChanged order_size_changed = 6;
   }
 
   message Trade {
-    sint32 price = 3;
-    sint32 size = 4;
+    sint32 price = 1;
+    sint32 size = 2;
   }
 
   message OrderAdded {
@@ -66,7 +70,7 @@ message BookResponse {
 
 service SimexService {
   rpc SubmitOrder (Order) returns (SubmitOrderResponse) {}
-  rpc CancelOrder (Order) returns (CancelOrderResponse) {}
-  rpc GetMarketDataStream (MarketDataRequest) returns (stream MarketEvent) {}
+  rpc CancelOrder (CancelOrderRequest) returns (CancelOrderResponse) {}
+  rpc GetMarketDataStream (stream MarketDataRequest) returns (stream MarketEvent) {}
   rpc GetBook (BookRequest) returns (BookResponse) {}
 }

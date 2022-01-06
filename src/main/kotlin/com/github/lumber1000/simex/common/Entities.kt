@@ -1,15 +1,8 @@
 package com.github.lumber1000.simex.common
 
-import java.util.function.BiPredicate
-
-enum class OrderType(val acceptablePricePredicate: BiPredicate<Int, Int>) {
-    BUY_LIMIT({ limitPrice, offeredPrice -> offeredPrice <= limitPrice }),
-    SELL_LIMIT({ limitPrice, offeredPrice -> offeredPrice >= limitPrice });
-
-    val opposite get() = when(this) {
-        BUY_LIMIT -> SELL_LIMIT
-        SELL_LIMIT -> BUY_LIMIT
-    }
+enum class OrderType {
+    BUY_LIMIT,
+    SELL_LIMIT
 }
 
 class Order(
@@ -20,9 +13,6 @@ class Order(
     var size: Int,
     val timestamp: Long
 ) {
-    fun isAcceptablePrice(otherOrder: Order) = type.acceptablePricePredicate.test(price, otherOrder.price)
-    override fun equals(other: Any?) = throw UnsupportedOperationException()
-    override fun hashCode() = throw UnsupportedOperationException()
     override fun toString() = "Order(id=$id, type=$type, ticker='$ticker', price=$price, size=$size, timestamp=$timestamp)"
 }
 
@@ -83,7 +73,7 @@ fun MarketEvent.toMessage(): SimexServiceOuterClass.MarketEvent {
         is NewOrderAdded -> eventBuilder.orderAddedEventBuilder.setOrder(order.toMessage())
         is OrderSizeChanged -> eventBuilder.orderSizeChangedBuilder.setNewSize(newSize)
         is OrderRemoved -> { /* none */ }
-        else -> throw IllegalStateException("unknown event")
+        else -> error("unknown event")
     }
 
     return eventBuilder.build()

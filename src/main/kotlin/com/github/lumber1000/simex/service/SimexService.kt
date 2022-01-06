@@ -1,84 +1,89 @@
 package com.github.lumber1000.simex.service
 
-import java.util.logging.Logger
 import java.util.concurrent.Executors
 import java.util.concurrent.ConcurrentHashMap
 import io.grpc.ServerBuilder
-import io.grpc.stub.ServerCallStreamObserver
 import io.grpc.stub.StreamObserver
+import mu.KotlinLogging
 import com.github.lumber1000.simex.common.*
+import io.grpc.Server
+import io.reactivex.rxjava3.schedulers.Schedulers
+import java.util.concurrent.Executor
 
-fun main() {
-    val orderMatcher = OrderMatcher()
-    val simexService = SimexService(orderMatcher, LOGGER)
-
-    val server = ServerBuilder.forPort(PORT)
-        .executor(Executors.newSingleThreadExecutor())
-        .addService(simexService)
-        .build()
-        .start()
-
-    LOGGER.info("Service started on port $PORT")
-
-    Runtime.getRuntime().addShutdownHook(Thread { server.shutdown() })
-    server.awaitTermination()
-}
-
-class SimexService(private val orderMatcher: OrderMatcher, private val logger: Logger) : SimexServiceGrpc.SimexServiceImplBase() {
-    private val streamObservers: MutableMap<String, MutableList<StreamObserver<SimexServiceOuterClass.MarketEvent>>> = ConcurrentHashMap()
+class SimexService(private val orderMatcher: OrderMatcher, private val ioExecutor: Executor) :
+    SimexServiceGrpc.SimexServiceImplBase() {
+    private val streamObservers: MutableMap<String, MutableMap<StreamObserver<SimexServiceOuterClass.MarketEvent>, String>> =
+        ConcurrentHashMap()
 
     init {
         orderMatcher.events
-            .doOnNext { logger.info("Event streamed: $it)") }
+            .observeOn(Schedulers.from(ioExecutor))
+            .doOnNext { LOGGER.info("Event streamed: $it)") }
             .map { it.toMessage() }
-            .subscribe { streamObservers[it.ticker]?.forEach { streamObserver -> streamObserver.onNext(it) } }
+            .subscribe { streamObservers[it.ticker]?.keys?.forEach { streamObserver -> streamObserver.onNext(it) } }
     }
 
-    private var prevOrderId = 0L
     override fun submitOrder(
         request: SimexServiceOuterClass.Order,
         responseObserver: StreamObserver<SimexServiceOuterClass.SubmitOrderResponse>
     ) {
-        val id = ++prevOrderId
-        val order = Order(id, OrderType.values()[request.type.ordinal], request.ticker, request.price, request.size, System.currentTimeMillis())
-        logger.info("Order received: $order")
-        orderMatcher.matchOrder(order)
-        val response = SimexServiceOuterClass.SubmitOrderResponse.newBuilder().setOrderId(id).build()
-        responseObserver.onNext(response)
-        responseObserver.onCompleted()
+        val order = Order(0, OrderType.values()[request.type.ordinal], request.ticker, request.price, request.size, 0)
+        LOGGER.info("Order received: $order")
+
+        orderMatcher.enqueueNewOrderRequest(order) { id: Long ->
+            ioExecutor.execute {
+                responseObserver.onNext(SimexServiceOuterClass.SubmitOrderResponse.newBuilder().setOrderId(id).build())
+                responseObserver.onCompleted()
+            }
+        }
     }
 
     override fun cancelOrder(
-        request: SimexServiceOuterClass.Order,
+        request: SimexServiceOuterClass.CancelOrderRequest,
         responseObserver: StreamObserver<SimexServiceOuterClass.CancelOrderResponse>
     ) {
-        val order = request.toOrder()
-        logger.info("Cancel request received: $order")
-        val succeed = orderMatcher.cancelOrder(order)
-        logger.info(if (succeed) "Order cancelled: $order" else "Failed to cancel order: $order")
-        responseObserver.onNext(SimexServiceOuterClass.CancelOrderResponse.newBuilder()
-            .setSucceed(succeed)
-            .setErrorMessage(if (succeed) "" else "Order not found")
-            .build())
-        responseObserver.onCompleted()
+        val orderId = request.orderId
+        LOGGER.info("Cancel request received: id = $orderId")
+
+        orderMatcher.enqueueCancelRequest(orderId) { succeed: Boolean ->
+            ioExecutor.execute {
+                LOGGER.info(if (succeed) "Order cancelled: id = $orderId" else "Failed to cancel order: id = $orderId")
+                responseObserver.onNext(
+                    SimexServiceOuterClass.CancelOrderResponse.newBuilder()
+                        .setSucceed(succeed)
+                        .setErrorMessage(if (succeed) "" else "Order not found")
+                        .build()
+                )
+                responseObserver.onCompleted()
+            }
+        }
     }
 
-    override fun getMarketDataStream(
-        request: SimexServiceOuterClass.MarketDataRequest,
-        responseObserver: StreamObserver<SimexServiceOuterClass.MarketEvent>
-    ) {
-        val tickersList: List<String> = request.tickerList.toList()
-        logger.info("Market data streaming requested for $tickersList")
-        tickersList.forEach {
-            val observersList = streamObservers.computeIfAbsent(it) { ArrayList() }
-            observersList.add(responseObserver)
-        }
+    override fun getMarketDataStream(responseObserver: StreamObserver<SimexServiceOuterClass.MarketEvent>):
+            StreamObserver<SimexServiceOuterClass.MarketDataRequest> {
 
-        (responseObserver as ServerCallStreamObserver<SimexServiceOuterClass.MarketEvent>)
-            .setOnCancelHandler {
-                tickersList.forEach { streamObservers[it]!!.remove(responseObserver) }
-                logger.info("Market data streaming cancelled for $tickersList")
+        fun unsubscribeResponseObserver() = streamObservers.values.forEach { it.remove(responseObserver) }
+
+        return object : StreamObserver<SimexServiceOuterClass.MarketDataRequest> {
+            override fun onNext(request: SimexServiceOuterClass.MarketDataRequest) {
+                val tickersList = request.tickerList.toList()
+                LOGGER.info("Market data streaming requested for $tickersList")
+
+                // resubscribe client for new tickers list
+                unsubscribeResponseObserver()
+                tickersList.forEach {
+                    val observersList = streamObservers.computeIfAbsent(it) { ConcurrentHashMap() }
+                    observersList[responseObserver] = "" // using Map as Set
+                }
             }
+
+            override fun onError(t: Throwable?) = onCompleted()
+            override fun onCompleted() {
+                unsubscribeResponseObserver()
+                responseObserver.onCompleted()
+                LOGGER.info("Market data streaming cancelled in onCompleted.")
+            }
+        }
     }
 
     override fun getBook(
@@ -86,14 +91,53 @@ class SimexService(private val orderMatcher: OrderMatcher, private val logger: L
         responseObserver: StreamObserver<SimexServiceOuterClass.BookResponse>
     ) {
         val tickersList: List<String> = request.tickerList.toList()
-        logger.info("Order book requested for $tickersList")
+        LOGGER.info("Order book requested for $tickersList")
 
-        val ordersList = orderMatcher.getBookForTickers(tickersList)
-        val responseBuilder = SimexServiceOuterClass.BookResponse.newBuilder()
+        orderMatcher.enqueueGetBookRequest(tickersList) { ordersList ->
+            ioExecutor.execute {
+                val responseBuilder = SimexServiceOuterClass.BookResponse.newBuilder()
+                ordersList.forEach { responseBuilder.addOrders(it.toMessage()) }
+                responseObserver.onNext(responseBuilder.build())
+                responseObserver.onCompleted()
+                LOGGER.info(
+                    "Order book sent with ids: ${
+                        ordersList.asSequence().map { it.id }.joinToString(prefix = "[", postfix = "]")
+                    }"
+                )
+            }
+        }
+    }
 
-        ordersList.forEach { responseBuilder.addOrders(it.toMessage()) }
-        responseObserver.onNext(responseBuilder.build())
-        responseObserver.onCompleted()
-        logger.info("Order book sent with ids: ${ordersList.asSequence().map { it.id }.joinToString(prefix = "[", postfix = "]")}")
+    companion object {
+        private val LOGGER = KotlinLogging.logger {}
+
+        @JvmStatic
+        fun main(vararg args: String) {
+            setDefaultExceptionHandler(LOGGER)
+            val config = loadConfig()
+
+            val orderMatcher = OrderMatcher()
+            val ioExecutor = Executors.newCachedThreadPool()
+            val simexService = SimexService(orderMatcher, ioExecutor)
+
+            val server: Server = ServerBuilder.forPort(config.port)
+                .executor(ioExecutor)
+                .addService(simexService)
+                .build()
+                .start()
+
+            Runtime.getRuntime().addShutdownHook(Thread {
+                LOGGER.info("Shutting down server.")
+
+                orderMatcher.stop()
+                if (!orderMatcher.awaitTermination(3_000)) {
+                    LOGGER.error("Failed to stop order matcher.")
+                }
+
+                server.shutdown()
+            })
+
+            server.awaitTermination()
+        }
     }
 }

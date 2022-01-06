@@ -1,27 +1,39 @@
 package com.github.lumber1000.simex.clients
 
-import java.util.logging.Logger
-import com.github.lumber1000.simex.common.*
-
-fun main() {
-    val monitor = MarketDataMonitor(HOSTNAME, PORT, LOGGER, listOf("T1", "T2"))
-    try {
-        monitor.run()
-    } finally {
-        monitor.shutdown()
-    }
-}
+import mu.KotlinLogging
+import com.github.lumber1000.simex.common.loadConfig
+import com.github.lumber1000.simex.common.setDefaultExceptionHandler
 
 class MarketDataMonitor(
     hostname: String,
     port: Int,
-    logger: Logger,
     private val tickers: List<String>
-) : BaseClient(hostname, port, logger) {
+) : BaseClient(hostname, port) {
     fun run() {
-        waitForConnection()
-        stubRxAdapter.requestMarketDataStream(tickers).blockingSubscribe {
-            println(it.toString())
+        waitForConnectionBlocking()
+
+        stubRxAdapter.requestMarketDataStream(tickers).blockingSubscribe(
+            { LOGGER.info("Market data event: $it") },
+            { LOGGER.error("Market data exception: ", it) },
+            { LOGGER.info("Market data onComplete.") },
+        )
+    }
+
+    companion object {
+        private val LOGGER = KotlinLogging.logger {}
+
+        @JvmStatic
+        fun main(vararg args: String) {
+            setDefaultExceptionHandler(LOGGER)
+            val config = loadConfig()
+
+            val monitor = MarketDataMonitor(config.hostname, config.port, listOf("T1", "T2"))
+
+            try {
+                monitor.run()
+            } finally {
+                monitor.shutdown()
+            }
         }
     }
 }

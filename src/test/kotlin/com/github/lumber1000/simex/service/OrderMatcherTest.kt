@@ -1,10 +1,10 @@
 package com.github.lumber1000.simex.service
 
-import java.util.stream.Collectors
-import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.BeforeEach
-import org.assertj.core.api.Assertions.assertThat
 import com.github.lumber1000.simex.common.*
+import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
+import java.util.stream.Collectors
 
 internal class OrderMatcherTest {
     private val matcher = OrderMatcher()
@@ -32,6 +32,18 @@ internal class OrderMatcherTest {
     private val order3 = Order(3L, OrderType.SELL_LIMIT, "T1", 100, 7, 0)
     private val order4 = Order(4L, OrderType.SELL_LIMIT, "T2", 100, 10, 0)
     private val order5 = Order(5L, OrderType.SELL_LIMIT, "T1", 90, 10, 0)
+
+    private fun getMethod(name: String, vararg cls: Class<*>) =
+        OrderMatcher::class.java.getDeclaredMethod(name, *cls).apply { isAccessible = true }
+
+    private val matchOrderMethod = getMethod("matchOrder", Order::class.java)
+    private val cancelOrderMethod = getMethod("cancelOrder", Long::class.java)
+    private val getBookForTickersMethod = getMethod("getBookForTickers", List::class.java)
+
+    private fun OrderMatcher.matchOrder(order: Order) { matchOrderMethod.invoke(this, order) }
+    private fun OrderMatcher.cancelOrder(orderId: Long) = cancelOrderMethod.invoke(this, orderId) as Boolean
+    @Suppress("UNCHECKED_CAST")
+    private fun OrderMatcher.getBookForTickers(tickers: List<String>) = getBookForTickersMethod.invoke(this, tickers) as List<Order>
 
     @Test
     fun testAddSingleOrder() {
@@ -91,7 +103,7 @@ internal class OrderMatcherTest {
     @Test
     fun testRemoveNonExistentOrder() {
         matcher.matchOrder(order1)
-        assertThat(matcher.cancelOrder(order2)).isFalse()
+        assertThat(matcher.cancelOrder(order2.id)).isFalse()
 
         val book = matcher.getBookForTickers(listOf(order1.ticker))
         assertThat(book).hasSize(1).contains(order1)
@@ -101,9 +113,10 @@ internal class OrderMatcherTest {
 
     @Test
     fun testRemoveExistentOrder() {
+
         matcher.matchOrder(order1)
         assertThat(matcher.getBookForTickers(listOf(order1.ticker))).hasSize(1).contains(order1)
-        assertThat(matcher.cancelOrder(order1)).isTrue()
+        assertThat(matcher.cancelOrder(order1.id)).isTrue()
         assertThat(matcher.getBookForTickers(listOf(order1.ticker))).isEmpty()
         assertThat(removedOrdersIdsList).hasSize(1).contains(order1.id)
 
@@ -116,11 +129,11 @@ internal class OrderMatcherTest {
     fun testMatch() {
         matcher.matchOrder(order1)
         matcher.matchOrder(order2)
-        assertThat(matcher.cancelOrder(order1)).isFalse()
-        assertThat(matcher.cancelOrder(order2)).isFalse()
+        assertThat(matcher.cancelOrder(order1.id)).isFalse()
+        assertThat(matcher.cancelOrder(order2.id)).isFalse()
 
         assertThat(tradesList).hasSize(1)
-        assertThat(tradesList[0]. size).isEqualTo(10)
+        assertThat(tradesList[0].size).isEqualTo(10)
     }
 
     @Test
@@ -145,8 +158,8 @@ internal class OrderMatcherTest {
         assertThat(matcher.getBookForTickers(listOf(order1.ticker))).hasSize(1).contains(order1)
         assertThat(matcher.getBookForTickers(listOf(order4.ticker))).hasSize(1).contains(order4)
 
-        assertThat(matcher.cancelOrder(order1)).isTrue()
-        assertThat(matcher.cancelOrder(order4)).isTrue()
+        assertThat(matcher.cancelOrder(order1.id)).isTrue()
+        assertThat(matcher.cancelOrder(order4.id)).isTrue()
 
         assertThat(matcher.getBookForTickers(listOf(order1.ticker, order4.ticker))).isEmpty()
         assertThat(tradesList).isEmpty()
@@ -158,10 +171,19 @@ internal class OrderMatcherTest {
         matcher.events.collect(Collectors.counting())
         matcher.matchOrder(order5)
         matcher.matchOrder(order1)
-        assertThat(matcher.cancelOrder(order1)).isFalse()
-        assertThat(matcher.cancelOrder(order5)).isFalse()
+        assertThat(matcher.cancelOrder(order1.id)).isFalse()
+        assertThat(matcher.cancelOrder(order5.id)).isFalse()
         assertThat(tradesList).hasSize(1)
         assertThat(tradesList[0].price).isEqualTo(90)
+    }
+
+    @Test
+    fun testPriceLevelQueue() {
+        matcher.matchOrder(order2)
+        matcher.matchOrder(order3)
+        matcher.matchOrder(order1)
+        assertThat(matcher.cancelOrder(order2.id)).isFalse()
+        assertThat(matcher.cancelOrder(order3.id)).isTrue()
     }
 
     @Test

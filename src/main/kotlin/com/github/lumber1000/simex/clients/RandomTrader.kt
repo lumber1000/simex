@@ -1,60 +1,79 @@
 package com.github.lumber1000.simex.clients
 
-import java.util.concurrent.CyclicBarrier
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
-import java.util.logging.Logger
 import kotlin.random.Random
+import mu.KotlinLogging
 import com.github.lumber1000.simex.common.*
-
-fun main() {
-    val numberOfTraders = 4
-    val executor = Executors.newFixedThreadPool(numberOfTraders)
-    val barrier = CyclicBarrier(numberOfTraders)
-
-    executor.submit(RandomTrader(HOSTNAME, PORT, LOGGER, barrier, "T1", OrderType.BUY_LIMIT, Random(1000)))
-    executor.submit(RandomTrader(HOSTNAME, PORT, LOGGER, barrier, "T1", OrderType.SELL_LIMIT, Random(2000)))
-    executor.submit(RandomTrader(HOSTNAME, PORT, LOGGER, barrier, "T2", OrderType.BUY_LIMIT, Random(3000)))
-    executor.submit(RandomTrader(HOSTNAME, PORT, LOGGER, barrier, "T2", OrderType.SELL_LIMIT, Random(4000)))
-
-    executor.shutdown()
-    executor.awaitTermination(1, TimeUnit.MINUTES)
-}
+import kotlinx.coroutines.*
+import java.util.concurrent.*
 
 class RandomTrader(
     host: String,
     port: Int,
-    logger: Logger,
-    private val barrier: CyclicBarrier,
     private val ticker: String,
     private val orderType: OrderType,
-    private val random: Random
-    ) : BaseClient(host, port, logger), Runnable {
+    private val random: Random,
+    private var numberOfOrders: Int
+) : BaseClient(host, port) {
 
-    override fun run() {
-        waitForConnection()
+    private suspend fun placeOrders() {
+        // waitForConnection()
 
-        repeat(20) {
+        repeat(numberOfOrders) {
             val order = Order(0L, orderType, ticker, random.nextInt(100, 200), random.nextInt(1, 100), 0L)
             stubRxAdapter.submitOrder(order)
-            logger.info("Send order: $order")
-            Thread.sleep(random.nextLong(200, 800))
+            LOGGER.info("Send order: $order")
+            delay(random.nextLong(200, 800))
+        }
+    }
+
+    private suspend fun cancelUnsatisfiedOrders() {
+        var book = stubRxAdapter.getBook(listOf(ticker)).blockingGet()
+        if (book.isEmpty()) return
+
+        println("\nOrderBook for $ticker (${book.size} orders):\n\n$book\n")
+        println("Cancel unsatisfied orders:\n")
+
+        book.forEach {
+            LOGGER.info("Cancel order: $it")
+            stubRxAdapter.cancelOrder(it)
         }
 
-        barrier.await()
+        delay(10)
 
-        if (orderType == OrderType.BUY_LIMIT) {
-            var book = stubRxAdapter.getBook(listOf(ticker)).blockingGet()
-            println("\nOrderBook for $ticker (${book.size} orders)\n\n$book\n")
-            println("\n\nCancel all orders\n")
+        book = stubRxAdapter.getBook(listOf(ticker)).blockingGet()
+        println("\nOrderBook for $ticker (${book.size} orders)\n\n$book\n")
+    }
 
-            book.forEach {
-                logger.info("Cancel order: $it")
-                stubRxAdapter.cancelOrder(it)
+    companion object {
+        private val LOGGER = KotlinLogging.logger {}
+
+        @JvmStatic
+        fun main(vararg args: String) {
+            setDefaultExceptionHandler(LOGGER)
+            val config = loadConfig()
+            val numberOfOrders = 20
+
+            fun createTrader(ticker: String, type: OrderType, seed: Int) =
+                RandomTrader(config.hostname, config.port, ticker, type, Random(seed), numberOfOrders)
+
+            val traders = listOf(
+                createTrader("T1", OrderType.BUY_LIMIT, 1000),
+                createTrader("T1", OrderType.SELL_LIMIT, 2000),
+                createTrader("T2", OrderType.BUY_LIMIT, 3000),
+                createTrader("T2", OrderType.SELL_LIMIT, 4000)
+            )
+
+            Executors.newSingleThreadExecutor().asCoroutineDispatcher().use { context ->
+                runBlocking {
+                    traders.first().waitForConnection()
+
+                    traders.map { launch(context) { it.placeOrders() } }
+                        .toList()
+                        .joinAll()
+
+                    traders.forEach { it.cancelUnsatisfiedOrders() }
+                }
             }
-
-            book = stubRxAdapter.getBook(listOf(ticker)).blockingGet()
-            println("\n\nOrderBook for $ticker (${book.size} orders)\n$book\n")
         }
     }
 }
