@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+option java_package = "com.github.lumber1000.simex.common";
+
+message Order {
+  sint64 id = 1;
+
+  enum OrderType {
+    BUY_LIMIT = 0;
+    SELL_LIMIT = 1;
+  }
+
+  OrderType type = 2;
+  string ticker = 3;
+  sint32 price = 4;
+  sint32 size = 5;
+  sint64 timestamp = 6;
+}
+
+message SubmitOrderResponse {
+  sint64 orderId = 1;
+}
+
+message CancelOrderRequest {
+  sint64 orderId = 1;
+}
+
+message CancelOrderResponse {
+  bool succeed = 1;
+  string errorMessage = 2;
+}
+
+message MarketEvent {
+
+  sint64 id = 1;
+  string ticker = 2;
+  sint64 timestamp = 3;
+
+  oneof event {
+    Trade trade = 4;
+    OrderAdded order_added_event = 5;
+    OrderSizeChanged order_size_changed = 6;
+  }
+
+  message Trade {
+    sint32 price = 1;
+    sint32 size = 2;
+  }
+
+  message OrderAdded {
+    Order order = 1;
+  }
+
+  message OrderSizeChanged {
+    sint32 new_size = 1;
+  }
+}
+
+message MarketDataRequest {
+  repeated string ticker = 1;
+}
+
+message BookRequest {
+  repeated string ticker = 1;
+}
+
+message BookResponse {
+  repeated Order orders = 1;
+}
+
+service SimexService {
+  rpc SubmitOrder (Order) returns (SubmitOrderResponse) {}
+  rpc CancelOrder (CancelOrderRequest) returns (CancelOrderResponse) {}
+  rpc GetMarketDataStream (stream MarketDataRequest) returns (stream MarketEvent) {}
+  rpc GetBook (BookRequest) returns (BookResponse) {}
+}
